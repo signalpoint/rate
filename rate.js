@@ -1,3 +1,7 @@
+// Holds onto the last value clicked for a tag. Prevents repetitive clicks on
+// the same rate input.
+var _rate_last_value = [];
+
 /**
  * Implements hook_entity_post_render_content().
  */
@@ -50,6 +54,158 @@ function rate_entity_post_render_content(entity, entity_type, bundle) {
 }
 
 /**
+ * Themes a rate widget. Expects the 'widget' and 'entity' objects to be set on
+ * the incoming variables, as well as the 'entity_type' and 'bundle' property
+ * strings.
+ */
+function theme_rate(variables) {
+  try {
+    variables.attributes.class += ' rate rate_widget ' + variables.widget.tag + ' ';
+    if (typeof variables.attributes['data-role'] === 'undefined') {
+      variables.attributes['data-role'] = 'collapsible';
+    }
+    if (typeof variables.attributes['data-collapsed'] === 'undefined') {
+      variables.attributes['data-collapsed'] = 'false';
+    }
+    var html = theme(variables.widget.theme, variables);
+    html += drupalgap_jqm_page_event_script_code({
+        page_id: drupalgap_get_page_id(),
+        jqm_page_event: 'pageshow',
+        jqm_page_event_callback: '_theme_rate_pageshow',
+        jqm_page_event_args: JSON.stringify({
+            entity_type: variables.entity_type,
+            entity_id: variables.entity[entity_primary_key(variables.entity_type)],
+            tag: variables.widget.tag
+        })
+    });
+    return html;
+  }
+  catch (error) { console.log('theme_rate - ' + error); }
+}
+
+/**
+ *
+ */
+function _theme_rate_pageshow(options) {
+  try {
+
+    // Load the results.
+    votingapi_select_votes({
+        data: {
+          type: 'results',
+          criteria: {
+            entity_id: options.entity_id,
+            entity_type: options.entity_type,
+            tag: options.tag
+          }
+        },
+        success: function(results) {
+          
+          // Place the result counts on each input label.
+          rate_clear_label_results(options.tag);
+          $.each(results, function(index, result){
+              rate_set_label_result(result, options.tag);
+          });
+          $('.' + options.tag).trigger('create');
+          
+          // Load the user's votes.
+          votingapi_select_votes({
+              data: {
+                type: 'votes',
+                criteria: {
+                  entity_id: options.entity_id,
+                  entity_type: options.entity_type,
+                  tag: options.tag,
+                  uid: Drupal.user.uid
+                }
+              },
+              success: function(votes) {
+                // If the user rated this widget, highlight their input.
+                // @TODO - this probably doesn't work properly for a widget that
+                // has multiple anonymous ratings on it.
+                if (votes.length == 0) { return; }
+                var vote = votes[0];
+                var selector = '.' + options.tag + ' input[value="' + vote.value + '"]';
+                $(selector).prop("checked", true).checkboxradio("refresh");
+                rate_set_user_vote_description(options.tag, vote.value);
+                _rate_last_value[options.tag] = vote.value;
+              }
+          });
+          
+        }
+    });
+  }
+  catch (error) { console.log('_theme_rate_pageshow - ' + error); }
+}
+
+/**
+ * Handles clicks on a rate widget.
+ */
+function _theme_rate_onclick(input, entity_type, entity_id, value_type, tag) {
+  try {
+    // Grab the value of the rating.
+    var value = $(input).val();
+    // Don't proceed if the value hasn't changed.
+    if (typeof _rate_last_value[tag] !== 'undefined' && _rate_last_value[tag] == value) {
+      return;
+    }
+    // Save the value to prevent click abuse.
+    _rate_last_value[tag] = value;
+    // Set the vote.
+    votingapi_set_votes({
+        data: {
+          votes: [{
+            entity_type: entity_type,
+            entity_id: entity_id,
+            value_type: value_type,
+            value: value,
+            tag: tag
+          }]
+        },
+        success: function(results) {
+          // Now that the vote is done, we've got the new results. Iterate over
+          // them and place their counts on each individual label.
+          rate_clear_label_results(tag);
+          $.each(results[entity_type][entity_id], function(index, result) {
+              rate_set_label_result(result, tag);
+          });
+          $('.' + tag).trigger('create');
+          rate_set_user_vote_description(tag, value)
+        }
+    });
+  }
+  catch (error) { console.log('_theme_rate_onclick - ' + error); }
+}
+
+/**
+ * Returns a rate widget's onclick handler attribute value string.
+ */
+function _theme_rate_onclick_handler(widget, entity, entity_type) {
+  try {
+    return "_theme_rate_onclick(this, '" +
+      entity_type + "', " +
+      entity[entity_primary_key(entity_type)] + ", " +
+      "'" + widget.value_type + "', " +
+      "'" + widget.tag + "'" +
+    ")";
+  }
+  catch (error) { console.log('_theme_rate_onclick_handler - ' + error); }
+}
+
+/**
+ * Given a set vote result option, this will return the option id bundled within.
+ */
+function rate_get_result_option_id(result) {
+  try {
+    // The 'function' property contains the option id at the end of the
+    // string. Figure out the option id, then extract the value (the
+    // number of ratings).
+    return result['function'].replace(result.value_type + '-', '');
+  }
+  catch (error) { console.log('rate_get_result_option_id - ' + error); }
+}
+
+/**
  * Given a tag, this will load the corresponding rate widget.
  */
 function rate_load_widget_from_tag(tag) {
@@ -64,6 +220,45 @@ function rate_load_widget_from_tag(tag) {
     return widget;
   }
   catch (error) { console.log('rate_load_widget_from_tag - ' + error); }
+}
+
+/**
+ *
+ */
+function rate_set_label_result(result, tag) {
+  try {
+    // Append the value onto the label. Determine the selector to the
+    // input first, then find the label.
+    var option_id = rate_get_result_option_id(result);
+    var value = result.value;
+    var selector = '.' + tag + ' input[value="' + option_id + '"]';
+    $(selector).siblings('label .rate_value').remove();
+    $(selector).siblings('label').append(theme('rate_value', {value: value, tag: tag}));
+  }
+  catch (error) { console.log('rate_set_label_result - ' + error); }
+}
+
+/**
+ *
+ */
+function rate_clear_label_results(tag) {
+  try {
+    $('.' + tag + ' .rate_value').remove();
+  }
+  catch (error) { console.log('rate_clear_label_results - ' + error); }
+}
+
+/**
+ *
+ */
+function rate_set_user_vote_description(tag, value) {
+  try {
+    var selector = '.' + tag + ' .rate_widget_description';
+    var label = rate_widget_option_label(rate_load_widget_from_tag(tag), value);
+    $(selector + ' .rate_result').remove();
+    $(selector).append(theme('rate_result', { tag: tag, label: label })).trigger('create');
+  }
+  catch (error) { console.log('rate_set_user_vote_description - ' + error); }
 }
 
 /**
@@ -112,139 +307,6 @@ function rate_widget_option_label(widget, value) {
 }
 
 /**
- * Handles clicks on a rate widget.
- */
-function _theme_rate_onclick(input, entity_type, entity_id, value_type, tag) {
-  try {
-    var value = $(input).val();
-    votingapi_set_votes({
-        data: {
-          votes: [{
-            entity_type: entity_type,
-            entity_id: entity_id,
-            value_type: value_type,
-            value: value,
-            tag: tag
-          }]
-        },
-        success: function(result) {
-          dpm('votingapi_set_votes');
-          dpm(result);
-        }
-    });
-  }
-  catch (error) { console.log('_theme_rate_onclick - ' + error); }
-}
-
-/**
- * Returns a rate widget's onclick handler attribute value string.
- */
-function _theme_rate_onclick_handler(widget, entity, entity_type) {
-  try {
-    return "_theme_rate_onclick(this, '" +
-      entity_type + "', " +
-      entity[entity_primary_key(entity_type)] + ", " +
-      "'" + widget.value_type + "', " +
-      "'" + widget.tag + "'" +
-    ")";
-  }
-  catch (error) { console.log('_theme_rate_onclick_handler - ' + error); }
-}
-
-/**
- * Themes a rate widget. Expects the 'widget' and 'entity' objects to be set on
- * the incoming variables, as well as the 'entity_type' and 'bundle' property
- * strings.
- */
-function theme_rate(variables) {
-  try {
-    variables.attributes.class += ' rate rate_widget ' + variables.widget.tag + ' ';
-    if (typeof variables.attributes['data-role'] === 'undefined') {
-      variables.attributes['data-role'] = 'collapsible';
-    }
-    if (typeof variables.attributes['data-collapsed'] === 'undefined') {
-      variables.attributes['data-collapsed'] = 'false';
-    }
-    var html = theme(variables.widget.theme, variables);
-    html += drupalgap_jqm_page_event_script_code({
-        page_id: drupalgap_get_page_id(),
-        jqm_page_event: 'pageshow',
-        jqm_page_event_callback: '_theme_rate_pageshow',
-        jqm_page_event_args: JSON.stringify({
-            entity_type: variables.entity_type,
-            entity_id: variables.entity[entity_primary_key(variables.entity_type)],
-            tag: variables.widget.tag
-        })
-    });
-    return html;
-  }
-  catch (error) { console.log('theme_rate - ' + error); }
-}
-
-/**
- *
- */
-function _theme_rate_pageshow(options) {
-  try {
-
-    // Load the results.
-    votingapi_select_votes({
-        data: {
-          type: 'results',
-          criteria: {
-            entity_id: options.entity_id,
-            entity_type: options.entity_type,
-            tag: options.tag
-          }
-        },
-        success: function(results) {
-          
-          $.each(results, function(index, result){
-              // The 'function' property contains the option id at the end of the
-              // string. Figure out the option id, then extract the value (the
-              // number of ratings).
-              var option_id = result['function'].replace(result.value_type + '-', '');
-              var value = result.value;
-              
-              // Append the value onto the label. Determine the selector to the
-              // input first, then find the label.
-              var selector = '.' + options.tag + ' input[value="' + option_id + '"]';
-              $(selector).siblings('label').append(theme('rate_value', {value: value, tag: options.tag}));
-          });
-          $('.' + options.tag).trigger('create');
-          
-          // Load the user's votes.
-          votingapi_select_votes({
-              data: {
-                type: 'votes',
-                criteria: {
-                  entity_id: options.entity_id,
-                  entity_type: options.entity_type,
-                  tag: options.tag,
-                  uid: Drupal.user.uid
-                }
-              },
-              success: function(votes) {
-                // If the user rated this widget, highlight their input.
-                // @TODO - this probably doesn't work properly for a widget that
-                // has multiple anonymous ratings on it.
-                if (votes.length == 0) { return; }
-                var vote = votes[0];
-                var selector = '.' + options.tag + ' input[value="' + vote.value + '"]';
-                $(selector).prop("checked", true).checkboxradio("refresh");
-                var description_selector = '.' + options.tag + ' .rate_widget_description';
-                var label = rate_widget_option_label(rate_load_widget_from_tag(options.tag), vote.value);
-                $(description_selector).append(theme('rate_result', { tag: options.tag, label: label })).trigger('create');
-              }
-          });
-          
-        }
-    });
-  }
-  catch (error) { console.log('_theme_rate_pageshow - ' + error); }
-}
-
-/**
  * Themes a yes/no rate widget.
  */
 function theme_rate_template_yesno(variables) {
@@ -270,9 +332,10 @@ function theme_rate_template_yesno(variables) {
  */
 function theme_rate_value(variables) {
   try {
-    return '&nbsp;(' + variables.value + ' ' +
+    /* Leave this class name on the wrapper element. */
+    return '<span class="rate_value"> (' + variables.value + ' ' +
       drupalgap_format_plural(variables.value, 'vote', 'votes') +
-    ')';
+    ')</span>';
   }
   catch (error) { console.log('theme_rate_value - ' + error); }
 }
@@ -282,7 +345,8 @@ function theme_rate_value(variables) {
  */
 function theme_rate_result(variables) {
   try {
-    return "<h4><em>You voted '" + variables.label + "'.</em></h4>";
+    /* Leave the class name on the wrapper element. */
+    return "<h4 class='rate_result'><em>You voted '" + variables.label + "'.</em></h4>";
   }
   catch (error) { console.log('theme_rate_result - ' + error); }
 }
