@@ -1,6 +1,6 @@
 // Holds onto the last value clicked for a tag. Prevents repetitive clicks on
 // the same rate input.
-var _rate_last_value = [];
+var _rate_last_value = {};
 
 /**
  * Implements hook_entity_post_render_content().
@@ -8,16 +8,20 @@ var _rate_last_value = [];
 function rate_entity_post_render_content(entity, entity_type, bundle) {
   try {
     if (typeof drupalgap.site_settings.rate_widgets === 'undefined') { return; }
+    
+    // Cleanse the bundle from a potentially unwanted prefix.
+    var _bundle = bundle;
+    if (entity_type == 'comment') { _bundle = bundle.replace('comment_node_', ''); }
 
     // Since the rate widget isn't a field, we'll append/prepend the widget to
     // the entity's content.
 
     // Iterate over each rate widget...
     $.each(drupalgap.site_settings.rate_widgets, function(id, widget) {
-
+        
         // Skip this widget if it isn't supported on this entity type.
-        if (entity_type == 'node' && $.inArray(bundle, widget.node_types) == -1) { return; }
-        else if (entity_type == 'comment' && $.inArray(bundle, widget.comment_types) == -1) { return; }
+        if (entity_type == 'node' && $.inArray(_bundle, widget.node_types) == -1) { return; }
+        else if (entity_type == 'comment' && $.inArray(_bundle, widget.comment_types) == -1) { return; }
 
         // Skip the widget if the current user doesn't have access to it.
         // @TODO - add check on the allow_voting_by_author widget property.
@@ -38,7 +42,12 @@ function rate_entity_post_render_content(entity, entity_type, bundle) {
         // 0 - Do not add automatically
         // 1 - Above the content
         // 2 - Below the content
-        var html = theme('rate', { widget: widget, entity: entity, entity_type: entity_type, bundle: bundle });
+        var html = theme('rate', {
+          widget: widget,
+          entity: entity,
+          entity_type: entity_type,
+          bundle: bundle
+        });
         var display = null;
         if (entity_type == 'node') { display = 'node_display'; }
         else if (entity_type == 'comment') { display = 'comment_display'; }
@@ -67,17 +76,27 @@ function theme_rate(variables) {
     if (typeof variables.attributes['data-collapsed'] === 'undefined') {
       variables.attributes['data-collapsed'] = 'false';
     }
-    var html = theme(variables.widget.theme, variables);
-    html += drupalgap_jqm_page_event_script_code({
+    var entity_type = variables.entity_type;
+    var entity_id = variables.entity[entity_primary_key(entity_type)];
+    var tag = variables.widget.tag;
+    var container_id = rate_container_id(entity_type, entity_id, tag);
+    var html = '<div id="' + container_id + '">' +
+      theme(variables.widget.theme, variables) +
+    '</div>';
+    html += drupalgap_jqm_page_event_script_code(
+      {
         page_id: drupalgap_get_page_id(),
         jqm_page_event: 'pageshow',
         jqm_page_event_callback: '_theme_rate_pageshow',
         jqm_page_event_args: JSON.stringify({
-            entity_type: variables.entity_type,
-            entity_id: variables.entity[entity_primary_key(variables.entity_type)],
-            tag: variables.widget.tag
+            entity_type: entity_type,
+            entity_id: entity_id,
+            tag: tag,
+            uid: variables.entity.uid
         })
-    });
+      },
+      container_id
+    );
     return html;
   }
   catch (error) { console.log('theme_rate - ' + error); }
@@ -89,46 +108,60 @@ function theme_rate(variables) {
 function _theme_rate_pageshow(options) {
   try {
 
+    // Create the data query object.
+    var data = {
+      type: 'results',
+      criteria: {
+        entity_id: options.entity_id,
+        entity_type: options.entity_type,
+        tag: options.tag
+      }
+    };
+    
+    // Get the container id.
+    var container_id = rate_container_id(
+      options.entity_type,
+      options.entity_id,
+      options.tag
+    );
+    
     // Load the results.
     votingapi_select_votes({
-        data: {
-          type: 'results',
-          criteria: {
-            entity_id: options.entity_id,
-            entity_type: options.entity_type,
-            tag: options.tag
-          }
-        },
+        data: data,
         success: function(results) {
           
           // Place the result counts on each input label.
-          rate_clear_label_results(options.tag);
+          rate_clear_label_results(container_id);
           $.each(results, function(index, result){
-              rate_set_label_result(result, options.tag);
+              rate_set_label_result(result, options.tag, container_id);
           });
-          $('.' + options.tag).trigger('create');
+          $('#' + container_id).trigger('create');
           
           // Load the user's votes.
+          var _data = {
+            type: 'votes',
+            criteria: {
+              entity_id: options.entity_id,
+              entity_type: options.entity_type,
+              tag: options.tag,
+              uid: Drupal.user.uid
+            }
+          };
+          // When the entity type is a comment, append the entity's author id to
+          // the data query.
+          if (options.entity_type == 'comment') { _data.criteria.uid = options.uid; }
           votingapi_select_votes({
-              data: {
-                type: 'votes',
-                criteria: {
-                  entity_id: options.entity_id,
-                  entity_type: options.entity_type,
-                  tag: options.tag,
-                  uid: Drupal.user.uid
-                }
-              },
+              data: _data,
               success: function(votes) {
                 // If the user rated this widget, highlight their input.
                 // @TODO - this probably doesn't work properly for a widget that
                 // has multiple anonymous ratings on it.
                 if (votes.length == 0) { return; }
                 var vote = votes[0];
-                var selector = '.' + options.tag + ' input[value="' + vote.value + '"]';
+                var selector = '#' + container_id + ' input[value="' + vote.value + '"]';
                 $(selector).prop("checked", true).checkboxradio("refresh");
-                rate_set_user_vote_description(options.tag, vote.value);
-                _rate_last_value[options.tag] = vote.value;
+                rate_set_user_vote_description(container_id, options.tag, vote.value);
+                _rate_last_value[container_id] = vote.value;
               }
           });
           
@@ -145,12 +178,19 @@ function _theme_rate_onclick(input, entity_type, entity_id, value_type, tag) {
   try {
     // Grab the value of the rating.
     var value = $(input).val();
+    // Get the container id.
+    var container_id = rate_container_id(
+      entity_type,
+      entity_id,
+      tag
+    );
     // Don't proceed if the value hasn't changed.
-    if (typeof _rate_last_value[tag] !== 'undefined' && _rate_last_value[tag] == value) {
-      return;
-    }
+    if (
+      typeof _rate_last_value[container_id] !== 'undefined' &&
+      _rate_last_value[container_id] == value
+    ) { return; }
     // Save the value to prevent click abuse.
-    _rate_last_value[tag] = value;
+    _rate_last_value[container_id] = value;
     // Set the vote.
     votingapi_set_votes({
         data: {
@@ -163,14 +203,20 @@ function _theme_rate_onclick(input, entity_type, entity_id, value_type, tag) {
           }]
         },
         success: function(results) {
+          // Get the container id.
+          var container_id = rate_container_id(
+            entity_type,
+            entity_id,
+            tag
+          );
           // Now that the vote is done, we've got the new results. Iterate over
           // them and place their counts on each individual label.
-          rate_clear_label_results(tag);
+          rate_clear_label_results(container_id);
           $.each(results[entity_type][entity_id], function(index, result) {
-              rate_set_label_result(result, tag);
+              rate_set_label_result(result, tag, container_id);
           });
-          $('.' + tag).trigger('create');
-          rate_set_user_vote_description(tag, value)
+          $('#' + container_id).trigger('create');
+          rate_set_user_vote_description(container_id, tag, value);
         }
     });
   }
@@ -190,6 +236,16 @@ function _theme_rate_onclick_handler(widget, entity, entity_type) {
     ")";
   }
   catch (error) { console.log('_theme_rate_onclick_handler - ' + error); }
+}
+
+/**
+ *
+ */
+function rate_container_id(entity_type, entity_id, tag) {
+  try {
+    return 'rate_container_' + entity_type + '_' + entity_id + '_' + tag;
+  }
+  catch (error) { console.log('rate_container_id - ' + error); }
 }
 
 /**
@@ -225,15 +281,15 @@ function rate_load_widget_from_tag(tag) {
 /**
  *
  */
-function rate_set_label_result(result, tag) {
+function rate_set_label_result(result, tag, container_id) {
   try {
     // Append the value onto the label. Determine the selector to the
     // input first, then find the label.
     var option_id = rate_get_result_option_id(result);
     var value = result.value;
-    var selector = '.' + tag + ' input[value="' + option_id + '"]';
-    $(selector).siblings('label .rate_value').remove();
-    $(selector).siblings('label').append(theme('rate_value', {value: value, tag: tag}));
+    var selector = '#' + container_id + ' input[value="' + option_id + '"]';
+    $(selector).children('label .rate_value').remove();
+    $(selector).children('label').append(theme('rate_value', { value: value, tag: tag }));
   }
   catch (error) { console.log('rate_set_label_result - ' + error); }
 }
@@ -241,9 +297,9 @@ function rate_set_label_result(result, tag) {
 /**
  *
  */
-function rate_clear_label_results(tag) {
+function rate_clear_label_results(container_id) {
   try {
-    $('.' + tag + ' .rate_value').remove();
+    $('#' + container_id + ' .rate_value').remove();
   }
   catch (error) { console.log('rate_clear_label_results - ' + error); }
 }
@@ -251,9 +307,9 @@ function rate_clear_label_results(tag) {
 /**
  *
  */
-function rate_set_user_vote_description(tag, value) {
+function rate_set_user_vote_description(container_id, tag, value) {
   try {
-    var selector = '.' + tag + ' .rate_widget_description';
+    var selector = '#' + container_id + ' .rate_widget_description';
     var label = rate_widget_option_label(rate_load_widget_from_tag(tag), value);
     $(selector + ' .rate_result').remove();
     $(selector).append(theme('rate_result', { tag: tag, label: label })).trigger('create');
@@ -325,6 +381,16 @@ function theme_rate_template_yesno(variables) {
     return html;
   }
   catch (error) { console.log('rate_template_yesno - ' + error); }
+}
+
+/**
+ * Themes a thumbs up/down widget.
+ */
+function theme_rate_template_thumbs_up(variables) {
+  try {
+    return theme_rate_template_yesno(variables);
+  }
+  catch (error) { console.log('theme_rate_template_thumbs_up - ' + error); }
 }
 
 /**
