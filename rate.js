@@ -55,6 +55,9 @@ function rate_entity_post_render_content(entity, entity_type, bundle) {
           case 1: entity.content = html + entity.content; break;
           case 2: entity.content += html; break;
         }
+        
+        // Temporarily render only one widget. Used for dev/testing.
+        //return false;
     });
   }
   catch (error) {
@@ -92,7 +95,8 @@ function theme_rate(variables) {
             entity_type: entity_type,
             entity_id: entity_id,
             tag: tag,
-            uid: variables.entity.uid
+            uid: variables.entity.uid,
+            theme: variables.widget.theme
         })
       },
       container_id
@@ -129,12 +133,31 @@ function _theme_rate_pageshow(options) {
     votingapi_select_votes({
         data: data,
         success: function(results) {
-          
-          // Place the result counts on each input label.
-          rate_clear_label_results(container_id);
-          $.each(results, function(index, result){
-              rate_set_label_result(result, options.tag, container_id);
-          });
+
+          // Depending on the widget type, place the result count(s) on the widget.
+          switch (options.theme) {
+            case 'rate_template_yesno':
+              rate_clear_label_results(container_id);
+              $.each(results, function(index, result){
+                  rate_set_label_result(result, options.tag, container_id);
+              });
+              break;
+            case 'rate_template_thumbs_up':
+              // Extract the count value from the results, and stick it in the
+              // count placeholder.
+              var count = '';
+              $.each(results, function(index, result) {
+                  if (result['function'] == 'count') {
+                    count = result['value'];
+                    return false;
+                  }
+              });
+              $('#' + container_id + ' span.ui-li-count').html(count);
+              break;
+            default:
+              console.log('WARNING: _theme_rate_pageshow - unsupported widget (' + options.theme + ')');
+              break;
+          }
           $('#' + container_id).trigger('create');
           
           // Load the user's votes.
@@ -149,19 +172,34 @@ function _theme_rate_pageshow(options) {
           };
           // When the entity type is a comment, append the entity's author id to
           // the data query.
-          if (options.entity_type == 'comment') { _data.criteria.uid = options.uid; }
+          //if (options.entity_type == 'comment') { _data.criteria.uid = options.uid; }
           votingapi_select_votes({
               data: _data,
               success: function(votes) {
-                // If the user rated this widget, highlight their input.
-                // @TODO - this probably doesn't work properly for a widget that
-                // has multiple anonymous ratings on it.
+                dpm('votingapi_select_votes');
+                dpm(options.tag);
+                dpm(votes);
                 if (votes.length == 0) { return; }
-                var vote = votes[0];
-                var selector = '#' + container_id + ' input[value="' + vote.value + '"]';
-                $(selector).prop("checked", true).checkboxradio("refresh");
-                rate_set_user_vote_description(container_id, options.tag, vote.value);
-                _rate_last_value[container_id] = vote.value;
+                // If the user rated this widget, highlight their input.
+                switch (options.theme) {
+                  case 'rate_template_yesno':
+                    // @TODO this doesn't work for anonymous users, we need to
+                    // iterate over the votes and find the vote with their IP
+                    // address, we can't just grab index 0, that's a bad
+                    // assumption. I think a PhoneGap plugin is needed to get
+                    // the IP address.
+                    var vote = votes[0];
+                    var selector = '#' + container_id + ' input[value="' + vote.value + '"]';
+                    $(selector).prop("checked", true).checkboxradio("refresh");
+                    rate_set_user_vote_description(container_id, options.tag, vote.value);
+                    _rate_last_value[container_id] = vote.value;
+                    break;
+                  case 'rate_template_thumbs_up':
+                    break;
+                  default:
+                    console.log('WARNING: _theme_rate_pageshow - votingapi_select_votes - unsupported widget (' + options.theme + ')');
+                    break;
+                }
               }
           });
           
@@ -236,6 +274,71 @@ function _theme_rate_onclick_handler(widget, entity, entity_type) {
     ")";
   }
   catch (error) { console.log('_theme_rate_onclick_handler - ' + error); }
+}
+
+/**
+ *
+ */
+function _theme_rate_template_thumbs_up_onclick_handler(widget, entity, entity_type) {
+  try {
+    return "_theme_rate_template_thumbs_up_onclick(this, '" +
+      entity_type + "', " +
+      entity[entity_primary_key(entity_type)] + ", " +
+      "'" + widget.tag + "'" +
+    ")";
+  }
+  catch (error) { console.log('_theme_rate_onclick_handler - ' + error); }
+}
+
+/**
+ *
+ */
+function _theme_rate_template_thumbs_up_onclick(input, entity_type, entity_id, tag) {
+  try {
+    // Get the container id.
+    var container_id = rate_container_id(
+      entity_type,
+      entity_id,
+      tag
+    );
+    // Determine the value.
+    var value = 1;
+    // Set the vote.
+    votingapi_set_votes({
+        data: {
+          votes: [{
+            entity_type: entity_type,
+            entity_id: entity_id,
+            value_type: 'points',
+            value: value,
+            tag: tag
+          }]
+        },
+        success: function(results) {
+          dpm(results);
+          // Now that the vote is done, we've got the new results. The results
+          // contain data for every single rate widget(s) being used on this
+          // entity, so we need to iterate over the collection looking for the
+          // current tag's count value.
+          var count = '';
+          if (
+            typeof results[entity_type] !== 'undefined' &&
+            typeof results[entity_type][entity_id] !== 'undefined'
+          ) {
+            $.each(results[entity_type][entity_id], function(index, result) {
+                if (result['tag'] == tag && result['function'] == 'count') {
+                  count = result['value'];
+                  return false;
+                }
+            });
+          }
+          if (count != '') {
+            $('#' + container_id + ' span.ui-li-count').html(count);
+          }
+        }
+    });
+  }
+  catch (error) { console.log('_theme_rate_template_thumbs_up_onclick - ' + error); }
 }
 
 /**
@@ -388,7 +491,24 @@ function theme_rate_template_yesno(variables) {
  */
 function theme_rate_template_thumbs_up(variables) {
   try {
-    return theme_rate_template_yesno(variables);
+    dpm('theme_rate_template_thumbs_up');
+    dpm(variables);
+    var input_attributes = {
+      type: 'checkbox',
+      onclick: _theme_rate_template_thumbs_up_onclick_handler(
+        variables.widget,
+        variables.entity,
+        variables.entity_type
+      )
+    };
+    var html =
+    '<label>' +
+      '<span class="ui-li-count"></span>' +
+      '<input ' + drupalgap_attributes(input_attributes) + '/>' +
+      variables.widget.description +
+    '</label>';
+    // arrow-u
+    return html;
   }
   catch (error) { console.log('theme_rate_template_thumbs_up - ' + error); }
 }
