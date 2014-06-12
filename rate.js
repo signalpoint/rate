@@ -176,25 +176,47 @@ function _theme_rate_pageshow(options) {
           votingapi_select_votes({
               data: _data,
               success: function(votes) {
-                dpm('votingapi_select_votes');
-                dpm(options.tag);
-                dpm(votes);
                 if (votes.length == 0) { return; }
-                // If the user rated this widget, highlight their input.
+                // The anonymous user(s) can vote on an entity more than
+                // once, so we have to iterate over the result collection
+                // and look for the current user's ip address to see if they
+                // voted on this yet. Authenticated users just use the
+                // first vote in the result collection. Extract the vote
+                // object and set the bool to true if we find a vote.
+                var vote = null;
+                var voted = false;
+                if (Drupal.user.uid == 0) {
+                  var ip = drupalgap_get_ip();
+                  if (ip) {
+                    $.each(votes, function(index, _vote) {
+                        if (_vote.vote_source == ip) {
+                          voted = true;
+                          vote = _vote;
+                          return false;
+                        }
+                    });
+                  }
+                }
+                else {
+                  voted = true;
+                  vote = votes[0];
+                }
+                // If the user rated this widget, highlight their input depending
+                // on the widget's theme.
+                if (!vote) { return; }
+                var selector = '#' + container_id + ' ';
                 switch (options.theme) {
                   case 'rate_template_yesno':
-                    // @TODO this doesn't work for anonymous users, we need to
-                    // iterate over the votes and find the vote with their IP
-                    // address, we can't just grab index 0, that's a bad
-                    // assumption. I think a PhoneGap plugin is needed to get
-                    // the IP address.
-                    var vote = votes[0];
-                    var selector = '#' + container_id + ' input[value="' + vote.value + '"]';
+                    selector +=  'input[value="' + vote.value + '"]';
                     $(selector).prop("checked", true).checkboxradio("refresh");
                     rate_set_user_vote_description(container_id, options.tag, vote.value);
                     _rate_last_value[container_id] = vote.value;
                     break;
                   case 'rate_template_thumbs_up':
+                    var checked = false;
+                    if (vote.value == '1') { checked = true; }
+                    selector += 'input[type="checkbox"]';
+                    $(selector).prop("checked", checked).checkboxradio("refresh");
                     break;
                   default:
                     console.log('WARNING: _theme_rate_pageshow - votingapi_select_votes - unsupported widget (' + options.theme + ')');
@@ -302,20 +324,22 @@ function _theme_rate_template_thumbs_up_onclick(input, entity_type, entity_id, t
       tag
     );
     // Determine the value.
-    var value = 1;
+    var value = -1;
+    if ($(input).is(':checked')) { value = 1; }
+    var data = {
+      votes: [{
+        entity_type: entity_type,
+        entity_id: entity_id,
+        value_type: 'points',
+        value: value,
+        tag: tag
+      }]
+    };
+    //if (value == -1) { delete data.votes[0].value; }
     // Set the vote.
     votingapi_set_votes({
-        data: {
-          votes: [{
-            entity_type: entity_type,
-            entity_id: entity_id,
-            value_type: 'points',
-            value: value,
-            tag: tag
-          }]
-        },
+        data: data,
         success: function(results) {
-          dpm(results);
           // Now that the vote is done, we've got the new results. The results
           // contain data for every single rate widget(s) being used on this
           // entity, so we need to iterate over the collection looking for the
@@ -491,8 +515,6 @@ function theme_rate_template_yesno(variables) {
  */
 function theme_rate_template_thumbs_up(variables) {
   try {
-    dpm('theme_rate_template_thumbs_up');
-    dpm(variables);
     var input_attributes = {
       type: 'checkbox',
       onclick: _theme_rate_template_thumbs_up_onclick_handler(
