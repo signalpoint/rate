@@ -10,8 +10,9 @@ Installation
 
      https://drupal.org/project/services_votingapi
 
+2. Follow the README for the services_votingapi module.
 
-2. Enable this module in your DrupalGap app:
+3. Enable this module in your DrupalGap app:
 
      https://github.com/signalpoint/votingapi
 
