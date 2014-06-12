@@ -18,7 +18,6 @@ function rate_entity_post_render_content(entity, entity_type, bundle) {
 
     // Iterate over each rate widget...
     $.each(drupalgap.site_settings.rate_widgets, function(id, widget) {
-        
         // Skip this widget if it isn't supported on this entity type.
         if (entity_type == 'node' && $.inArray(_bundle, widget.node_types) == -1) { return; }
         else if (entity_type == 'comment' && $.inArray(_bundle, widget.comment_types) == -1) { return; }
@@ -145,7 +144,7 @@ function _theme_rate_pageshow(options) {
             case 'rate_template_thumbs_up':
               // Extract the count value from the results, and stick it in the
               // count placeholder.
-              var count = '';
+              var count = '0';
               $.each(results, function(index, result) {
                   if (result['function'] == 'count') {
                     count = result['value'];
@@ -213,9 +212,9 @@ function _theme_rate_pageshow(options) {
                     _rate_last_value[container_id] = vote.value;
                     break;
                   case 'rate_template_thumbs_up':
+                    selector += 'input[type="checkbox"]';
                     var checked = false;
                     if (vote.value == '1') { checked = true; }
-                    selector += 'input[type="checkbox"]';
                     $(selector).prop("checked", checked).checkboxradio("refresh");
                     break;
                   default:
@@ -323,44 +322,61 @@ function _theme_rate_template_thumbs_up_onclick(input, entity_type, entity_id, t
       entity_id,
       tag
     );
-    // Determine the value.
-    var value = -1;
-    if ($(input).is(':checked')) { value = 1; }
-    var data = {
-      votes: [{
-        entity_type: entity_type,
-        entity_id: entity_id,
-        value_type: 'points',
-        value: value,
-        tag: tag
-      }]
-    };
-    //if (value == -1) { delete data.votes[0].value; }
-    // Set the vote.
-    votingapi_set_votes({
-        data: data,
-        success: function(results) {
-          // Now that the vote is done, we've got the new results. The results
-          // contain data for every single rate widget(s) being used on this
-          // entity, so we need to iterate over the collection looking for the
-          // current tag's count value.
-          var count = '';
-          if (
-            typeof results[entity_type] !== 'undefined' &&
-            typeof results[entity_type][entity_id] !== 'undefined'
-          ) {
-            $.each(results[entity_type][entity_id], function(index, result) {
-                if (result['tag'] == tag && result['function'] == 'count') {
-                  count = result['value'];
-                  return false;
-                }
-            });
+    // Set vote, or delete vote?
+    var set = false;
+    if ($(input).is(':checked')) { set = true; }
+    if (set) {
+      // Set the vote.
+      var data = {
+        votes: [{
+          entity_type: entity_type,
+          entity_id: entity_id,
+          value_type: 'points',
+          value: 1,
+          tag: tag
+        }]
+      };
+      votingapi_set_votes({
+          data: data,
+          success: function(results) {
+            // Now that the vote is done, we've got the new results. The results
+            // contain data for every single rate widget(s) being used on this
+            // entity, so we need to iterate over the collection looking for the
+            // current tag's count value.
+            var count = '';
+            if (
+              typeof results[entity_type] !== 'undefined' &&
+              typeof results[entity_type][entity_id] !== 'undefined'
+            ) {
+              count = rate_get_count_from_results(results[entity_type][entity_id], tag);
+            }
+            if (!empty(count)) {
+              $('#' + container_id + ' span.ui-li-count').html(count);
+            }
           }
-          if (count != '') {
+      });
+    }
+    else {
+      // Delete the vote.
+      var data = {
+        votes: [{
+            entity_type: entity_type,
+            entity_id: entity_id,
+            tag: tag
+        }]
+      };
+      votingapi_delete_votes({
+          data: data,
+          success: function(results) {
+            var count = '0';
+            if (results.length != 0) {
+              // There are some votes.
+              count = rate_get_count_from_results(results, tag);
+            }
             $('#' + container_id + ' span.ui-li-count').html(count);
           }
-        }
-    });
+      });
+    }
   }
   catch (error) { console.log('_theme_rate_template_thumbs_up_onclick - ' + error); }
 }
@@ -490,6 +506,23 @@ function rate_widget_option_label(widget, value) {
 }
 
 /**
+ *
+ */
+function rate_get_count_from_results(results, tag) {
+  try {
+    var count = '';
+    $.each(results, function(index, result) {
+        if (result['tag'] == tag && result['function'] == 'count') {
+          count = result['value'];
+          return false;
+        }
+    });
+    return count;
+  }
+  catch (error) { console.log('rate_get_count_from_results - ' + error); }
+}
+
+/**
  * Themes a yes/no rate widget.
  */
 function theme_rate_template_yesno(variables) {
@@ -523,11 +556,15 @@ function theme_rate_template_thumbs_up(variables) {
         variables.entity_type
       )
     };
+    var title = variables.widget.title;
+    if (!empty(variables.widget.description)) {
+      title = variables.widget.description;
+    }
     var html =
     '<label>' +
       '<span class="ui-li-count"></span>' +
       '<input ' + drupalgap_attributes(input_attributes) + '/>' +
-      variables.widget.description +
+      title +
     '</label>';
     // arrow-u
     return html;
