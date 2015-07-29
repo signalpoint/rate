@@ -321,6 +321,7 @@ function _theme_rate_template_thumbs_up_onclick_handler(widget, entity, entity_t
  */
 function _theme_rate_template_thumbs_up_onclick(input, entity_type, entity_id, tag) {
   try {
+    var rate_widget = rate_load_widget_from_tag(tag);
     // Get the container id.
     var container_id = rate_container_id(
       entity_type,
@@ -357,6 +358,9 @@ function _theme_rate_template_thumbs_up_onclick(input, entity_type, entity_id, t
             }
             if (!empty(count)) {
               $('#' + container_id + ' span.ui-li-count').html(count);
+            }
+            if (rate_widget.delete_vote_on_second_click == "0") {
+              $('#' + container_id + ' input[type="checkbox"]').attr("disabled", "disabled").checkboxradio("refresh");
             }
           }
       });
