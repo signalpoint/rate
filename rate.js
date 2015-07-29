@@ -128,6 +128,8 @@ function _theme_rate_pageshow(options) {
       options.tag
     );
     
+    var rate_widget = rate_load_widget_from_tag(options.tag);
+    
     // Load the results.
     votingapi_select_votes({
         data: data,
@@ -216,6 +218,9 @@ function _theme_rate_pageshow(options) {
                     var checked = false;
                     if (vote.value == '1') { checked = true; }
                     $(selector).prop("checked", checked).checkboxradio("refresh");
+                    if (rate_widget.delete_vote_on_second_click == "0") {
+                      $(selector).attr("disabled", "disabled").checkboxradio("refresh");
+                    }
                     break;
                   default:
                     console.log('WARNING: _theme_rate_pageshow - votingapi_select_votes - unsupported widget (' + options.theme + ')');
